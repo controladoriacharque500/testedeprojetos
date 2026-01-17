@@ -6,7 +6,7 @@ from fpdf import FPDF
 import io
 
 # --- CONFIGURAÇÕES INICIAIS ---
-PLANILHA_NOME = "Mapa_de_Pedidos" 
+PLANILHA_NOME = "Mapa_de_Pedidos2" 
 CREDENTIALS_PATH = "credentials.json"
 
 def get_gc():
