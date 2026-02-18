@@ -99,7 +99,7 @@ def load_data():
 
         # Leitura robusta usando get_all_values() com intervalo forçado
         # Seus dados vão até a coluna 'STATUS VALIDADE' (coluna J na planilha)
-        RANGE_PLANILHA = "A1:K"
+        RANGE_PLANILHA = "A1:L"
         all_data = aba.get_values(RANGE_PLANILHA)
 
         headers = all_data[0]
