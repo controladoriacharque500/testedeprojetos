@@ -170,7 +170,7 @@ if not df_estoque.empty:
     # --- INTERFACE DE FILTRO ---
     st.subheader("Filtros de Consulta")
 
-    col1, col2, col3, col4, col5 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
 
     with col1:
         rastreio_input = st.text_input("🔍 Filtrar por Rastreio:", help="Filtro parcial (contém)")
