@@ -203,7 +203,7 @@ if not df_estoque.empty:
     if tipo_filtro != 'Todos':
         df_filtrado = df_filtrado[df_filtrado['TIPO'] == tipo_filtro]
 
-    if tipo_filtro != 'Todos':
+    if Fornecedor_filtro != 'Todos':
         df_filtrado = df_filtrado[df_filtrado['FORNECEDOR'] == Fornecedor_filtro]
 
     if produto_filtro != 'Todos':
