@@ -5,7 +5,7 @@ from datetime import datetime
 import json # Necessário para o tratamento robusto do st.secrets
 
 # --- Configurações Iniciais ---
-PLANILHA_NOME = "Estoque_industria_Analitico2" # Verifique se este nome está EXATO
+PLANILHA_NOME = "Estoque_industria_Analitico" # Verifique se este nome está EXATO
 COLUNAS_NUMERICAS_LIMPEZA = ['KG', 'CX']
 COLUNAS_DATA_FORMATACAO = ['FABRICACAO', 'VALIDADE']
 ABA_NOME = "ESTOQUETotal"
