@@ -1,267 +1,271 @@
 import streamlit as st
 import pandas as pd
-from gspread import service_account, service_account_from_dict
 from datetime import datetime
-import json # Necessário para o tratamento robusto do st.secrets
+from gspread import service_account, service_account_from_dict
 
-# --- Configurações Iniciais ---
-PLANILHA_NOME = "Estoque_industria_Analitico" # Verifique se este nome está EXATO
-COLUNAS_NUMERICAS_LIMPEZA = ['KG', 'CX']
-COLUNAS_DATA_FORMATACAO = ['FABRICACAO', 'VALIDADE']
-ABA_NOME = "ESTOQUETotal"
+# CONFIGURAÇÃO DA PÁGINA
+st.set_page_config(page_title="Gerenciamento de Custo e Vendas", layout="wide")
 
-# Colunas que serão exibidas na tabela final
-COLUNAS_EXIBICAO = [
-    'TIPO',
-    'FORNECEDOR',
-    'RASTREIO',
-    'NOTA FISCAL',
-    'MATÉRIA-PRIMA',
-    'PRODUTO',
-    'KG',
-    'CX',
-    'FABRICACAO',
-    'VALIDADE',
-    'STATUS VALIDADE'
-]
+# CONSTANTES
+PLANILHA_NOME = "Gerenciamento de custo"
+CREDENTIALS_PATH = "credentials.json"  # Caso use localmente
 
-# --- Configurações de Página ---
-st.set_page_config(
-    page_title="Consulta Estoque Indústria",
-    page_icon="🔎",
-    layout="wide"
-)
-
-# --- Formatar data (Padrão Brasileiro) ---
-
-def formatar_br_data(d):
-    """
-    Formata um objeto datetime/Timestamp para o formato brasileiro dd/mm/aaaa.
-    Lida com valores nulos (NaT) e vazios (pd.isna).
-    """
-    if pd.isna(d):
-        return ''
-
-    if pd.isnull(d):
-        return ''
-
+# -----------------------------------------------------------------------------
+# FUNÇÃO DE CONEXÃO AUTENTICADA
+# -----------------------------------------------------------------------------
+def conectar_google_sheets():
     try:
-        # Usa strftime, o método padrão para formatar objetos datetime
-        return d.strftime("%d/%m/%Y")
-    except AttributeError:
-        # Retorna o valor original (string, número) se a conversão falhou
-        return str(d)
-
-# --- Funções de Formatação (Padrão Brasileiro) ---
-
-def formatar_br_numero_inteiro(x):
-    """Formata número inteiro usando ponto como separador de milhar."""
-    if pd.isna(x):
-        return ''
-
-    val = int(round(x)) if pd.notna(x) else 0
-    s = f"{val:,}"
-
-    return s.replace(',', '#TEMP#').replace('.', ',').replace('#TEMP#', '.').strip()
-
-
-# --- Conexão e Carregamento de Dados ---
-@st.cache_data(ttl=600)
-def load_data():
-    """Conecta e carrega os dados da planilha."""
-
-    # --- AUTENTICAÇÃO ROBUSTA (st.secrets) ---
-    try:
-        if "gcp_service_account" not in st.secrets:
-             raise ValueError("Nenhuma seção [gcp_service_account] encontrada no st.secrets.")
-
-        secrets_dict = dict(st.secrets["gcp_service_account"])
-        private_key_corrompida = secrets_dict["private_key"]
-
-        private_key_limpa = private_key_corrompida.replace('\n', '').replace(' ', '')
-        private_key_limpa = private_key_limpa.replace('-----BEGINPRIVATEKEY-----', '').replace('-----ENDPRIVATEKEY-----', '')
-        padding_necessario = len(private_key_limpa) % 4
-        if padding_necessario != 0:
-            private_key_limpa += '=' * (4 - padding_necessario)
-        secrets_dict["private_key"] = f"-----BEGIN PRIVATE KEY-----\n{private_key_limpa}\n-----END PRIVATE KEY-----\n"
-
-        gc = service_account_from_dict(secrets_dict)
-        
+        if "gcp_service_account" in st.secrets:
+            secrets_dict = dict(st.secrets["gcp_service_account"])
+            private_key_corrompida = secrets_dict["private_key"]
+            
+            private_key_limpa = private_key_corrompida.replace('\n', '').replace(' ', '')
+            private_key_limpa = private_key_limpa.replace('-----BEGINPRIVATEKEY-----', '').replace('-----ENDPRIVATEKEY-----', '')
+            
+            padding_necessario = len(private_key_limpa) % 4
+            if padding_necessario != 0:
+                private_key_limpa += '=' * (4 - padding_necessario)
+            
+            secrets_dict["private_key"] = f"-----BEGIN PRIVATE KEY-----\n{private_key_limpa}\n-----END PRIVATE KEY-----\n"
+            gc = service_account_from_dict(secrets_dict)
+        else:
+            gc = service_account(filename=CREDENTIALS_PATH)
+            
+        return gc.open(PLANILHA_NOME)
     except Exception as e:
-        st.error(f"Erro de autenticação/acesso: Verifique se a chave no secrets.toml está correta. Detalhe: {e}")
-        return pd.DataFrame(), None
-        
-    # --- ACESSO À PLANILHA E LEITURA ROBUSTA ---
+        st.error(f"Erro crítico na autenticação do Google Sheets: {e}")
+        return None
+
+# -----------------------------------------------------------------------------
+# FUNÇÕES DE LEITURA E ESCRITA
+# -----------------------------------------------------------------------------
+def carregar_aba(nome_aba):
+    planilha = conectar_google_sheets()
+    if planilha:
+        try:
+            aba = planilha.worksheet(nome_aba)
+            data = aba.get_all_records()
+            df = pd.DataFrame(data)
+            
+            if df.empty:
+                return df, aba
+                
+            # Tratamento numérico para colunas financeiras
+            colunas_dinheiro = ['preco_unitario', 'preco_total', 'custo_total', 'custo_por_pote', 'preco_venda_unitario', 'faturamento_total']
+            for col in colunas_dinheiro:
+                if col in df.columns:
+                    df[col] = df[col].astype(str).str.strip()
+                    df[col] = df[col].str.replace('R$', '', regex=False).str.strip()
+                    df[col] = df[col].str.replace(',', '.', regex=False)
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+            
+            return df, aba
+        except Exception as e:
+            st.error(f"Erro ao carregar a aba {nome_aba}: {e}")
+    return pd.DataFrame(), None
+
+def adicionar_linha_sheets(aba, nova_linha_lista):
     try:
-        planilha = gc.open(PLANILHA_NOME)
-        data_atualizacao_raw = planilha.get_lastUpdateTime() # nova função captura de data google drive
-        aba = planilha.worksheet(ABA_NOME)
-
-        # Leitura robusta usando get_all_values() com intervalo forçado
-        # Seus dados vão até a coluna 'STATUS VALIDADE' (coluna J na planilha)
-        RANGE_PLANILHA = "A1:L"
-        all_data = aba.get_values(RANGE_PLANILHA)
-
-        headers = all_data[0]
-        data_rows = all_data[1:]
-
-        df = pd.DataFrame(data_rows, columns=headers)
-
-        # 1. LIMPEZA INICIAL DE COLUNAS/LINHAS VAZIAS
-        df.columns = df.columns.str.strip()
-        df.dropna(axis=1, how='all', inplace=True)
-        df.dropna(how='all', inplace=True)
-
-        # 2. CONVERSÃO DE TIPOS DE DADOS (CRUCIAL PARA A FORMATAÇÃO)
-
-        # Converte Datas
-        for col in COLUNAS_DATA_FORMATACAO:
-            if col in df.columns:
-                # dayfirst=True é essencial para garantir que 01/05/2025 seja lido como 1 de Maio
-                df[col] = pd.to_datetime(df[col], errors='coerce', dayfirst=True)
-
-        # Converte Números
-        for col in COLUNAS_NUMERICAS_LIMPEZA:
-            if col in df.columns:
-                df[col] = df[col].astype(str).str.strip()
-                df[col] = df[col].str.replace('.', '', regex=False)
-                df[col] = df[col].str.replace(',', '.', regex=False)
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-
-        # Retorna o DataFrame limpo e convertido
-        return df, data_atualizacao_raw
-
+        linha_formatada = [
+            str(item) if isinstance(item, (float, int)) else item 
+            for item in nova_linha_lista
+        ]
+        aba.append_row(linha_formatada, value_input_option='USER_ENTERED')
     except Exception as e:
-        # Se o erro for aqui, ele pode ser um problema de nome de aba/permissão/estrutura
-        st.error(f"Erro ao carregar dados da planilha: Verifique o nome da planilha ('{PLANILHA_NOME}'), a aba ('{ABA_NOME}') ou a estrutura de dados (células mescladas/vazias na linha 1). Detalhe: {e}")
-        return pd.DataFrame(), None
+        st.error(f"Erro ao salvar dados na planilha: {e}")
 
+# Carrega todas as abas do Sheets
+df_lotes, aba_lotes = carregar_aba("lotes")
+df_compras, aba_compras = carregar_aba("compras_lote")
+df_vendas, aba_vendas = carregar_aba("vendas")
 
-# --- Carregar e Exibir os Dados ---
-df_estoque, data_atualizacao_raw = load_data()
+# Garantir tipos de IDs corretos
+if not df_lotes.empty:
+    df_lotes['id_lote'] = pd.to_numeric(df_lotes['id_lote'], errors='coerce').fillna(0).astype(int)
+if not df_compras.empty:
+    df_compras['id_lote'] = pd.to_numeric(df_compras['id_lote'], errors='coerce').fillna(0).astype(int)
+if not df_vendas.empty:
+    df_vendas['id_lote'] = pd.to_numeric(df_vendas['id_lote'], errors='coerce').fillna(0).astype(int)
 
-# --- FORMATAÇÃO E EXIBIÇÃO DA DATA DE ATUALIZAÇÃO ---
-data_atualizacao_formatada = ""
-if data_atualizacao_raw:
-    try:
-        # Converte a string ISO (gspread) para datetime
-        data_dt = datetime.fromisoformat(data_atualizacao_raw.replace('Z', '+00:00'))
-        data_atualizacao_formatada = formatar_br_data(data_dt)
-    except Exception:
-        data_atualizacao_formatada = "Erro ao formatar data"
+# -----------------------------------------------------------------------------
+# NAVEGAÇÃO LATERAL (MENU)
+# -----------------------------------------------------------------------------
+st.sidebar.title("🗂️ Navegação")
+modulo = st.sidebar.radio("Selecione o Módulo:", ["📦 Custos do Lote", "💰 Vendas e Lucros"])
 
-st.title("🔎 Consulta Estoque Indústria")
-if data_atualizacao_formatada:
-    st.markdown(f"**Última Atualização:** {data_atualizacao_formatada}")
-st.markdown("---")
-
-if not df_estoque.empty:
-
-    # --- PREPARO DOS DADOS DE FILTRO ---
-    for col_filtro in ['TIPO', 'FORNECEDOR', 'PRODUTO', 'RASTREIO', 'STATUS VALIDADE']:
-        if col_filtro in df_estoque.columns:
-            df_estoque[col_filtro] = df_estoque[col_filtro].astype(str).fillna('Não Informado')
-
-    opcoes_tipo = ['Todos'] + sorted(df_estoque['TIPO'].unique().tolist())
-    opcoes_fornecedor = ['Todos'] + sorted(df_estoque['FORNECEDOR'].unique().tolist())
-    opcoes_produto = ['Todos'] + sorted(df_estoque['PRODUTO'].unique().tolist())
-    opcoes_status = ['Todos'] + sorted(df_estoque['STATUS VALIDADE'].unique().tolist())
-
-    # --- INTERFACE DE FILTRO ---
-    st.subheader("Filtros de Consulta")
-
-    col1, col2, col3, col4, col5 = st.columns(5)
-
+# =============================================================================
+# MÓDULO 1: CUSTOS DO LOTE
+# =============================================================================
+if modulo == "📦 Custos do Lote":
+    st.title("📦 Gerenciamento de Custo por Lotes")
+    st.markdown("---")
+    
+    col1, col2 = st.columns([1, 1.2])
+    
     with col1:
-        rastreio_input = st.text_input("🔍 Filtrar por Rastreio:", help="Filtro parcial (contém)")
+        st.header("Gerenciar Lotes")
+        with st.expander("➕ Criar Novo Lote", expanded=True):
+            proximo_id = int(df_lotes['id_lote'].max() + 1) if not df_lotes.empty and pd.notna(df_lotes['id_lote'].max()) else 1
+            nome_sugerido = f"Lote {proximo_id}"
+            
+            nome_lote = st.text_input("Nome/Identificação do Lote", value=nome_sugerido)
+            data_atual = datetime.now().strftime("%d/%m/%Y")
+            st.write(f"Data de Criação: **{data_atual}**")
+            
+            if st.button("Iniciar Lote", use_container_width=True):
+                if aba_lotes is not None:
+                    adicionar_linha_sheets(aba_lotes, [proximo_id, nome_lote, data_atual, 0, 0.0, 0.0])
+                    st.success(f"🎉 {nome_lote} criado!")
+                    st.rerun()
+
+        if not df_lotes.empty:
+            with st.expander("🛒 Lançar Compras / Insumos", expanded=True):
+                lotes_disponiveis = df_lotes['nome_lote'].tolist()
+                lote_selecionado = st.selectbox("Selecione o Lote para adicionar gastos", lotes_disponiveis)
+                id_lote_sel = int(df_lotes[df_lotes['nome_lote'] == lote_selecionado]['id_lote'].values[0])
+                
+                item = st.text_input("Nome do Ingrediente/Insumo", placeholder="Ex: Caixa de Açaí 10L, Pote 500ml")
+                c_qtd, c_preco = st.columns(2)
+                with c_qtd:
+                    quantidade = st.number_input("Quantidade", min_value=1, value=1, step=1)
+                with c_preco:
+                    preco_unitario = st.number_input("Preço Unitário (R$)", min_value=0.0, value=0.0, step=0.01, format="%.2f")
+                
+                preco_total_item = round(quantidade * preco_unitario, 2)
+                st.info(f"Subtotal do Item: R$ {preco_total_item:.2f}")
+                
+                if st.button("Adicionar Compra à Planilha", use_container_width=True):
+                    if item == "" or preco_unitario <= 0:
+                        st.error("Verifique os campos de preenchimento.")
+                    elif aba_compras is not None:
+                        proximo_id_compra = len(df_compras) + 1
+                        adicionar_linha_sheets(aba_compras, [proximo_id_compra, id_lote_sel, item, quantidade, preco_unitario, preco_total_item])
+                        st.success(f"✔️ {item} adicionado!")
+                        st.rerun()
 
     with col2:
-        Fornecedor_filtro = st.selectbox("🚛 Filtrar por Fornecedor:", opcoes_fornecedor)
-        
-    with col3:
-        tipo_filtro = st.selectbox("📝 Filtrar por Tipo:", opcoes_tipo)
-    
-    with col4:
-        produto_filtro = st.selectbox("🏭 Filtrar por Produto:", opcoes_produto)
-
-    with col5:
-        status_filtro = st.selectbox("📅 Filtrar por Status:", opcoes_status)
-
-
-    # --- LÓGICA DE FILTRAGEM ---
-    df_filtrado = df_estoque.copy()
-
-    rastreio_input = rastreio_input.lower().strip()
-    if rastreio_input:
-        df_filtrado = df_filtrado[
-            df_filtrado['RASTREIO']
-            .astype(str)
-            .str.lower()
-            .str.contains(rastreio_input, na=False)
-        ]
-
-    if tipo_filtro != 'Todos':
-        df_filtrado = df_filtrado[df_filtrado['TIPO'] == tipo_filtro]
-
-    if Fornecedor_filtro != 'Todos':
-        df_filtrado = df_filtrado[df_filtrado['FORNECEDOR'] == Fornecedor_filtro]
-
-    if produto_filtro != 'Todos':
-        df_filtrado = df_filtrado[df_filtrado['PRODUTO'] == produto_filtro]
-
-    if status_filtro != 'Todos':
-        df_filtrado = df_filtrado[df_filtrado['STATUS VALIDADE'] == status_filtro]
-
-
-    # --- CÁLCULO E EXIBIÇÃO DOS TOTAIS ---
-
-    total_kg = df_filtrado['KG'].sum()
-    total_cx = df_filtrado['CX'].sum()
-
-    total_kg_formatado = formatar_br_numero_inteiro(total_kg)
-    total_cx_formatado = formatar_br_numero_inteiro(total_cx)
+        st.header("📊 Resumo e Rendimento")
+        if df_lotes.empty:
+            st.info("Crie um lote ao lado para começar.")
+        else:
+            st.subheader(f"Detalhes atuais: {lote_selecionado}")
+            compras_do_lote = df_compras[df_compras['id_lote'] == id_lote_sel] if not df_compras.empty else pd.DataFrame()
+            
+            if compras_do_lote.empty:
+                st.warning("Nenhuma compra registrada para este lote ainda.")
+                custo_total_lote = 0.0
+            else:
+                st.dataframe(compras_do_lote[['item', 'quantidade', 'preco_unitario', 'preco_total']], use_container_width=True, hide_index=True)
+                custo_total_lote = round(float(compras_do_lote['preco_total'].sum()), 2)
+                st.metric(label="Custo Total do Lote", value=f"R$ {custo_total_lote:.2f}")
+                
+                st.markdown("#### 🏁 Fechamento do Lote")
+                rendimento = st.number_input("Quantas unidades finais (potes/litros) renderam?", min_value=0, value=0, step=1)
+                
+                if rendimento > 0:
+                    custo_por_pote = round(custo_total_lote / rendimento, 2)
+                    st.metric(label="Custo Real por Unidade", value=f"R$ {custo_por_pote:.2f}")
+                    
+                    if st.button("Salvar Fechamento na Planilha", use_container_width=True):
+                        if aba_lotes is not None:
+                            lista_ids = df_lotes['id_lote'].tolist()
+                            linha_sheets = lista_ids.index(id_lote_sel) + 2
+                            aba_lotes.update_cell(linha_sheets, 4, int(rendimento))
+                            aba_lotes.update_cell(linha_sheets, 5, str(custo_total_lote))
+                            aba_lotes.update_cell(linha_sheets, 6, str(custo_por_pote))
+                            st.success("💾 Dados salvos no Drive!")
+                            st.rerun()
 
     st.markdown("---")
-    st.subheader(f"Resultados Encontrados ({len(df_filtrado)} itens)")
+    st.subheader("📋 Histórico Geral de Lotes")
+    st.dataframe(df_lotes, use_container_width=True, hide_index=True)
 
-    col_t1, col_t2, col_t3 = st.columns(3)
-
-    with col_t1:
-        st.metric(label="📦 Total de Caixas (CX)", value=total_cx_formatado)
-
-    with col_t2:
-        st.metric(label="⚖️ Total de Quilogramas (KG)", value=total_kg_formatado)
-
-    with col_t3:
-        st.write("")
-
-
-    # --- APLICAÇÃO DA FORMATAÇÃO E SELEÇÃO DE COLUNAS ---
-
-    try:
-        df_display = df_filtrado[COLUNAS_EXIBICAO].copy()
-    except KeyError as e:
-        st.error(f"Erro: A coluna {e} não foi encontrada. Verifique se os nomes são exatos: {COLUNAS_EXIBICAO}")
-        st.stop()
-
-    # Aplica a formatação de números inteiros
-    for col in COLUNAS_NUMERICAS_LIMPEZA:
-        if col in df_display.columns:
-            df_display[col] = df_display[col].apply(formatar_br_numero_inteiro)
-
-    # Aplicando a formatação nas datas
-    for col in COLUNAS_DATA_FORMATACAO:
-        if col in df_display.columns:
-            df_display[col] = df_display[col].apply(formatar_br_data)
-
-    # --- EXIBIÇÃO ---
-    if not df_filtrado.empty:
-        st.dataframe(
-            df_display,
-            use_container_width=True
-        )
-    else:
-        st.warning("Nenhum resultado encontrado para os filtros aplicados.")
-
+# =============================================================================
+# MÓDULO 2: VENDAS E LUCROS
+# =============================================================================
+else:
+    st.title("💰 Registro de Vendas e Balanço de Lucros")
+    st.markdown("---")
     
-    if st.sidebar.button("Sair"): st.session_state.usuario_logado = None; st.rerun()
+    if df_lotes.empty:
+        st.warning("Você precisa criar e fechar ao menos um lote no módulo anterior para poder vender.")
+    else:
+        col1, col2 = st.columns([1, 1.2])
+        
+        with col1:
+            st.header("🛍️ Registrar Nova Venda")
+            
+            lotes_disponiveis = df_lotes['nome_lote'].tolist()
+            lote_venda = st.selectbox("A qual Lote pertence este produto vendido?", lotes_disponiveis)
+            
+            # Dados do lote escolhido para a venda
+            lote_info = df_lotes[df_lotes['nome_lote'] == lote_venda].iloc[0]
+            id_lote_venda = int(lote_info['id_lote'])
+            custo_unitario_lote = float(lote_info['custo_por_pote'])
+            
+            if custo_unitario_lote <= 0:
+                st.warning(f"⚠️ Atenção: O {lote_venda} ainda não teve o custo por unidade fechado. O cálculo do lucro ficará zerado até você fechar o lote.")
+            else:
+                st.info(f"Custo de fabricação deste lote: R$ {custo_unitario_lote:.2f} por unidade")
+
+            # Formulário da Venda
+            produto = st.text_input("Produto/Tamanho vendido", placeholder="Ex: Pote Açaí 500ml Completo, Copo 300ml")
+            c_q, c_v = st.columns(2)
+            with c_q:
+                qtd_venda = st.number_input("Quantidade Vendida", min_value=1, value=1, step=1)
+            with c_v:
+                preco_venda = st.number_input("Preço de Venda Unitário (R$)", min_value=0.0, value=0.0, step=0.50, format="%.2f")
+                
+            faturamento_total_venda = round(qtd_venda * preco_venda, 2)
+            st.success(f"Faturamento Total da Venda: R$ {faturamento_total_venda:.2f}")
+            
+            data_venda = datetime.now().strftime("%d/%m/%Y")
+            
+            if st.button("Confirmar e Gravar Venda", use_container_width=True):
+                if produto == "" or preco_venda <= 0:
+                    st.error("Preencha o nome do produto e o preço de venda.")
+                elif aba_vendas is not None:
+                    proximo_id_venda = len(df_vendas) + 1
+                    # id_venda, id_lote, data_venda, produto_vendido, quantidade, preco_venda_unitario, faturamento_total
+                    adicionar_linha_sheets(aba_vendas, [proximo_id_venda, id_lote_venda, data_venda, produto, qtd_venda, preco_venda, faturamento_total_venda])
+                    st.success("💰 Venda gravada com sucesso!")
+                    st.rerun()
+                    
+        with col2:
+            st.header("📈 Balanço Financeiro por Lote")
+            
+            # Caixa de seleção para analisar o lucro de um lote específico
+            lote_analise = st.selectbox("Selecione um lote para ver o balanço de lucros:", lotes_disponiveis)
+            lote_analise_info = df_lotes[df_lotes['nome_lote'] == lote_analise].iloc[0]
+            id_lote_analise = int(lote_analise_info['id_lote'])
+            custo_total_gravado = float(lote_analise_info['custo_total'])
+            custo_unit_gravado = float(lote_analise_info['custo_por_pote'])
+            
+            # Filtra as vendas deste lote específico
+            vendas_deste_lote = df_vendas[df_vendas['id_lote'] == id_lote_analise] if not df_vendas.empty else pd.DataFrame()
+            
+            # Métricas Gerais do Lote Comercializado
+            faturamento_lote = float(vendas_deste_lote['faturamento_total'].sum()) if not vendas_deste_lote.empty else 0.0
+            
+            # O custo real vendido é baseado nas unidades que saíram versus o custo de fabricação delas
+            qtd_total_vendida = int(vendas_deste_lote['quantidade'].sum()) if not vendas_deste_lote.empty else 0
+            custo_das_unidades_vendidas = qtd_total_vendida * custo_unit_gravado
+            
+            lucro_real = faturamento_lote - custo_das_unidades_vendidas
+            
+            # Layout de cartões de resultado (Métricas)
+            m1, m2, m3 = st.columns(3)
+            with m1:
+                st.metric(label="Investimento no Lote", value=f"R$ {custo_total_gravado:.2f}")
+            with m2:
+                st.metric(label="Faturamento Atual", value=f"R$ {faturamento_lote:.2f}")
+            with m3:
+                # Mostra o lucro e colore se está positivo ou negativo
+                st.metric(label="Lucro Real Obtido", value=f"R$ {lucro_real:.2f}", delta=f"R$ {lucro_real:.2f}" if lucro_real >= 0 else f"R$ {lucro_real:.2f}", delta_color="normal")
+            
+            st.markdown("---")
+            st.subheader(f"📋 Histórico de Vendas do {lote_analise}")
+            if vendas_deste_lote.empty:
+                st.text("Nenhuma venda registrada para este lote.")
+            else:
+                st.dataframe(vendas_deste_lote[['data_venda', 'produto_vendido', 'quantidade', 'preco_venda_unitario', 'faturamento_total']], use_container_width=True, hide_index=True)
