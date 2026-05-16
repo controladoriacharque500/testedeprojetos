@@ -7,7 +7,7 @@ from gspread import service_account, service_account_from_dict
 st.set_page_config(page_title="Gerenciamento de Custo e Vendas", layout="wide")
 
 # CONSTANTES
-PLANILHA_NOME = "Gerenciamento de custo"
+PLANILHA_NOME = "Gerenciamento de custo2"
 CREDENTIALS_PATH = "credentials.json"  # Caso use localmente
 
 # -----------------------------------------------------------------------------
