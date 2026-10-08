@@ -37,7 +37,7 @@ def conectar_google_sheets():
         return None
 
 # -----------------------------------------------------------------------------
-# FUNÇÕES DE LEITURA E ESCRITA
+# FUNÇÕES DE LEITURA, ESCRITA E EXCLUSÃO
 # -----------------------------------------------------------------------------
 def carregar_aba(nome_aba):
     planilha = conectar_google_sheets()
@@ -74,6 +74,15 @@ def adicionar_linha_sheets(aba, nova_linha_lista):
     except Exception as e:
         st.error(f"Erro ao salvar dados na planilha: {e}")
 
+def excluir_linha_sheets(aba, linha_index):
+    """Exclui uma linha específica pelo número da linha no Google Sheets."""
+    try:
+        aba.delete_rows(linha_index)
+        return True
+    except Exception as e:
+        st.error(f"Erro ao excluir linha da planilha: {e}")
+        return False
+
 # Carrega todas as abas do Sheets
 df_lotes, aba_lotes = carregar_aba("lotes")
 df_compras, aba_compras = carregar_aba("compras_lote")
@@ -91,7 +100,11 @@ if not df_vendas.empty:
 # NAVEGAÇÃO LATERAL (MENU)
 # -----------------------------------------------------------------------------
 st.sidebar.title("🗂️ Navegação")
-modulo = st.sidebar.radio("Selecione o Módulo:", ["📦 Custos do Lote", "💰 Vendas e Lucros"])
+modulo = st.sidebar.radio("Selecione o Módulo:", [
+    "📦 Custos do Lote", 
+    "✏️ Editar / Excluir Compras", 
+    "💰 Vendas e Lucros"
+])
 
 # =============================================================================
 # MÓDULO 1: CUSTOS DO LOTE
@@ -181,7 +194,83 @@ if modulo == "📦 Custos do Lote":
     st.dataframe(df_lotes, use_container_width=True, hide_index=True)
 
 # =============================================================================
-# MÓDULO 2: VENDAS E LUCROS
+# MÓDULO 2: EDITAR OU EXCLUIR COMPRAS
+# =============================================================================
+elif modulo == "✏️ Editar / Excluir Compras":
+    st.title("✏️ Editar ou Excluir Compras / Insumos Lançados")
+    st.markdown("Use este módulo para corrigir itens lançados por engano no lote incorreto ou com valores errados.")
+    st.markdown("---")
+    
+    if df_compras.empty or df_lotes.empty:
+        st.info("Nenhuma compra ou lote cadastrado para editar.")
+    else:
+        lotes_disponiveis = df_lotes['nome_lote'].tolist()
+        lote_filtro = st.selectbox("Selecione o Lote para filtrar os itens:", lotes_disponiveis)
+        
+        id_lote_filtro = int(df_lotes[df_lotes['nome_lote'] == lote_filtro]['id_lote'].values[0])
+        compras_filtradas = df_compras[df_compras['id_lote'] == id_lote_filtro]
+        
+        if compras_filtradas.empty:
+            st.warning(f"Nenhum item/compra cadastrado para o {lote_filtro}.")
+        else:
+            st.subheader(f"Itens do {lote_filtro}")
+            st.dataframe(compras_filtradas[['id_compra', 'item', 'quantidade', 'preco_unitario', 'preco_total']], use_container_width=True, hide_index=True)
+            
+            st.markdown("---")
+            
+            # Opção de selecionar qual compra deseja alterar/excluir
+            opcoes_itens = [f"ID {row['id_compra']} - {row['item']} (Qtd: {row['quantidade']} | R$ {row['preco_unitario']:.2f})" for _, row in compras_filtradas.iterrows()]
+            item_selecionado_str = st.selectbox("Selecione o item que deseja Editar ou Excluir:", opcoes_itens)
+            
+            # Extrai o id_compra selecionado
+            id_compra_sel = int(item_selecionado_str.split(" - ")[0].replace("ID ", ""))
+            compra_dados = df_compras[df_compras['id_compra'] == id_compra_sel].iloc[0]
+            
+            # Calcula a linha correspondente no Google Sheets (linha 1 = cabeçalho, então índice no DF + 2)
+            linha_index_sheets = df_compras.index[df_compras['id_compra'] == id_compra_sel].tolist()[0] + 2
+            
+            col_edit, col_del = st.columns(2)
+            
+            # --- FORMULÁRIO DE EDIÇÃO ---
+            with col_edit:
+                st.markdown("### ✏️ Editar Item")
+                novo_nome = st.text_input("Nome do Item", value=str(compra_dados['item']))
+                
+                c_e_q, c_e_p = st.columns(2)
+                with c_e_q:
+                    nova_qtd = st.number_input("Nova Quantidade", min_value=1, value=int(compra_dados['quantidade']), step=1)
+                with c_e_p:
+                    novo_preco = st.number_input("Novo Preço Unitário (R$)", min_value=0.0, value=float(compra_dados['preco_unitario']), step=0.01, format="%.2f")
+                
+                novo_total = round(nova_qtd * novo_preco, 2)
+                st.info(f"Novo Subtotal: R$ {novo_total:.2f}")
+                
+                if st.button("Atualizar Compra na Planilha", use_container_width=True):
+                    if aba_compras is not None:
+                        aba_compras.update_cell(linha_index_sheets, 3, str(novo_nome))
+                        aba_compras.update_cell(linha_index_sheets, 4, int(nova_qtd))
+                        aba_compras.update_cell(linha_index_sheets, 5, str(novo_preco))
+                        aba_compras.update_cell(linha_index_sheets, 6, str(novo_total))
+                        st.success("✔️ Compra atualizada com sucesso no Google Sheets!")
+                        st.rerun()
+            
+            # --- SEÇÃO DE EXCLUSÃO ---
+            with col_del:
+                st.markdown("### 🗑️ Excluir Item")
+                st.warning(f"Atenção: Esta ação irá remover permanentemente o item **'{compra_dados['item']}'** da sua planilha.")
+                
+                confirmar_exclusao = st.checkbox("Confirmo que desejo excluir esta compra")
+                
+                if st.button("Excluir Compra da Planilha", type="primary", use_container_width=True):
+                    if not confirmar_exclusao:
+                        st.error("Marque a caixa de confirmação acima para prosseguir com a exclusão.")
+                    elif aba_compras is not None:
+                        if excluir_linha_sheets(aba_compras, linha_index_sheets):
+                            st.success(f"🗑️ Item '{compra_dados['item']}' excluído da planilha!")
+                            st.rerun()
+
+# =============================================================================
+# MÓDULO 3: VENDAS E LUCROS
 # =============================================================================
 else:
     st.title("💰 Registro de Vendas e Balanço de Lucros")
