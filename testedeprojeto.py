@@ -93,8 +93,11 @@ if not df_lotes.empty:
     df_lotes['id_lote'] = pd.to_numeric(df_lotes['id_lote'], errors='coerce').fillna(0).astype(int)
 if not df_compras.empty:
     df_compras['id_lote'] = pd.to_numeric(df_compras['id_lote'], errors='coerce').fillna(0).astype(int)
+    df_compras['id_compra'] = pd.to_numeric(df_compras['id_compra'], errors='coerce').fillna(0).astype(int)
 if not df_vendas.empty:
     df_vendas['id_lote'] = pd.to_numeric(df_vendas['id_lote'], errors='coerce').fillna(0).astype(int)
+    if 'id_venda' in df_vendas.columns:
+        df_vendas['id_venda'] = pd.to_numeric(df_vendas['id_venda'], errors='coerce').fillna(0).astype(int)
 
 # -----------------------------------------------------------------------------
 # NAVEGAÇÃO LATERAL (MENU)
@@ -151,7 +154,12 @@ if modulo == "📦 Custos do Lote":
                     if item == "" or preco_unitario <= 0:
                         st.error("Verifique os campos de preenchimento.")
                     elif aba_compras is not None:
-                        proximo_id_compra = len(df_compras) + 1
+                        # CORREÇÃO: Pega o MAIOR id_compra + 1 em vez de len(df_compras) + 1
+                        if not df_compras.empty and pd.notna(df_compras['id_compra'].max()):
+                            proximo_id_compra = int(df_compras['id_compra'].max()) + 1
+                        else:
+                            proximo_id_compra = 1
+
                         adicionar_linha_sheets(aba_compras, [proximo_id_compra, id_lote_sel, item, quantidade, preco_unitario, preco_total_item])
                         st.success(f"✔️ {item} adicionado!")
                         st.rerun()
@@ -314,8 +322,12 @@ else:
                 if produto == "" or preco_venda <= 0:
                     st.error("Preencha o nome do produto e o preço de venda.")
                 elif aba_vendas is not None:
-                    proximo_id_venda = len(df_vendas) + 1
-                    # id_venda, id_lote, data_venda, produto_vendido, quantidade, preco_venda_unitario, faturamento_total
+                    # CORREÇÃO: Pega o MAIOR id_venda + 1
+                    if not df_vendas.empty and 'id_venda' in df_vendas.columns and pd.notna(df_vendas['id_venda'].max()):
+                        proximo_id_venda = int(df_vendas['id_venda'].max()) + 1
+                    else:
+                        proximo_id_venda = 1
+
                     adicionar_linha_sheets(aba_vendas, [proximo_id_venda, id_lote_venda, data_venda, produto, qtd_venda, preco_venda, faturamento_total_venda])
                     st.success("💰 Venda gravada com sucesso!")
                     st.rerun()
@@ -349,7 +361,6 @@ else:
             with m2:
                 st.metric(label="Faturamento Atual", value=f"R$ {faturamento_lote:.2f}")
             with m3:
-                # Mostra o lucro e colore se está positivo ou negativo
                 st.metric(label="Lucro Real Obtido", value=f"R$ {lucro_real:.2f}", delta=f"R$ {lucro_real:.2f}" if lucro_real >= 0 else f"R$ {lucro_real:.2f}", delta_color="normal")
             
             st.markdown("---")
