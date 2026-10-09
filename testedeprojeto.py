@@ -50,12 +50,13 @@ def carregar_aba(nome_aba):
             if df.empty:
                 return df, aba
                 
-            # Tratamento numérico para colunas financeiras
-            colunas_dinheiro = ['preco_unitario', 'preco_total', 'custo_total', 'custo_por_pote', 'preco_venda_unitario', 'faturamento_total']
+            # Tratamento numérico para colunas financeiras e percentuais
+            colunas_dinheiro = ['preco_unitario', 'preco_total', 'custo_total', 'custo_por_pote', 'taxa_percentual', 'custo_com_taxa', 'preco_venda_unitario', 'faturamento_total']
             for col in colunas_dinheiro:
                 if col in df.columns:
                     df[col] = df[col].astype(str).str.strip()
                     df[col] = df[col].str.replace('R$', '', regex=False).str.strip()
+                    df[col] = df[col].str.replace('%', '', regex=False).str.strip()
                     df[col] = df[col].str.replace(',', '.', regex=False)
                     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
             
@@ -130,7 +131,8 @@ if modulo == "📦 Custos do Lote":
             
             if st.button("Iniciar Lote", use_container_width=True):
                 if aba_lotes is not None:
-                    adicionar_linha_sheets(aba_lotes, [proximo_id, nome_lote, data_atual, 0, 0.0, 0.0])
+                    # id_lote, nome_lote, data_criacao, rendimento_potes, custo_total, custo_por_pote, taxa_percentual, custo_com_taxa
+                    adicionar_linha_sheets(aba_lotes, [proximo_id, nome_lote, data_atual, 0, 0.0, 0.0, 0.0, 0.0])
                     st.success(f"🎉 {nome_lote} criado!")
                     st.rerun()
 
@@ -154,7 +156,6 @@ if modulo == "📦 Custos do Lote":
                     if item == "" or preco_unitario <= 0:
                         st.error("Verifique os campos de preenchimento.")
                     elif aba_compras is not None:
-                        # CORREÇÃO: Pega o MAIOR id_compra + 1 em vez de len(df_compras) + 1
                         if not df_compras.empty and pd.notna(df_compras['id_compra'].max()):
                             proximo_id_compra = int(df_compras['id_compra'].max()) + 1
                         else:
@@ -181,20 +182,37 @@ if modulo == "📦 Custos do Lote":
                 st.metric(label="Custo Total do Lote", value=f"R$ {custo_total_lote:.2f}")
                 
                 st.markdown("#### 🏁 Fechamento do Lote")
-                rendimento = st.number_input("Quantas unidades finais (potes/litros) renderam?", min_value=0, value=0, step=1)
+                
+                # CAMPOS LADO A LADO: RENDIMENTO E TAXA OPCIONAL (iFood/Plataformas)
+                c_rend, c_taxa = st.columns(2)
+                with c_rend:
+                    rendimento = st.number_input("Quantas unidades finais renderam?", min_value=0, value=0, step=1)
+                with c_taxa:
+                    taxa_percentual = st.number_input("Taxa Adicional / iFood (%)", min_value=0.0, value=0.0, step=0.5, format="%.1f", help="Ex: Digite 12 ou 27 para somar a comissão ao custo médio.")
                 
                 if rendimento > 0:
-                    custo_por_pote = round(custo_total_lote / rendimento, 2)
-                    st.metric(label="Custo Real por Unidade", value=f"R$ {custo_por_pote:.2f}")
+                    custo_base_pote = round(custo_total_lote / rendimento, 2)
+                    custo_com_taxa = round(custo_base_pote * (1 + (taxa_percentual / 100)), 2)
+                    
+                    m_c1, m_c2 = st.columns(2)
+                    with m_c1:
+                        st.metric(label="Custo Base por Unidade", value=f"R$ {custo_base_pote:.2f}")
+                    with m_c2:
+                        st.metric(label=f"Custo C/ Taxa ({taxa_percentual:.1f}%)", value=f"R$ {custo_com_taxa:.2f}")
                     
                     if st.button("Salvar Fechamento na Planilha", use_container_width=True):
                         if aba_lotes is not None:
                             lista_ids = df_lotes['id_lote'].tolist()
                             linha_sheets = lista_ids.index(id_lote_sel) + 2
+                            
+                            # Atualização dos valores na aba 'lotes'
                             aba_lotes.update_cell(linha_sheets, 4, int(rendimento))
                             aba_lotes.update_cell(linha_sheets, 5, str(custo_total_lote))
-                            aba_lotes.update_cell(linha_sheets, 6, str(custo_por_pote))
-                            st.success("💾 Dados salvos no Drive!")
+                            aba_lotes.update_cell(linha_sheets, 6, str(custo_base_pote))
+                            aba_lotes.update_cell(linha_sheets, 7, str(taxa_percentual))
+                            aba_lotes.update_cell(linha_sheets, 8, str(custo_com_taxa))
+                            
+                            st.success("💾 Dados do lote com taxa atualizados com sucesso no Google Drive!")
                             st.rerun()
 
     st.markdown("---")
@@ -226,20 +244,16 @@ elif modulo == "✏️ Editar / Excluir Compras":
             
             st.markdown("---")
             
-            # Opção de selecionar qual compra deseja alterar/excluir
             opcoes_itens = [f"ID {row['id_compra']} - {row['item']} (Qtd: {row['quantidade']} | R$ {row['preco_unitario']:.2f})" for _, row in compras_filtradas.iterrows()]
             item_selecionado_str = st.selectbox("Selecione o item que deseja Editar ou Excluir:", opcoes_itens)
             
-            # Extrai o id_compra selecionado
             id_compra_sel = int(item_selecionado_str.split(" - ")[0].replace("ID ", ""))
             compra_dados = df_compras[df_compras['id_compra'] == id_compra_sel].iloc[0]
             
-            # Calcula a linha correspondente no Google Sheets (linha 1 = cabeçalho, então índice no DF + 2)
             linha_index_sheets = df_compras.index[df_compras['id_compra'] == id_compra_sel].tolist()[0] + 2
             
             col_edit, col_del = st.columns(2)
             
-            # --- FORMULÁRIO DE EDIÇÃO ---
             with col_edit:
                 st.markdown("### ✏️ Editar Item")
                 novo_nome = st.text_input("Nome do Item", value=str(compra_dados['item']))
@@ -262,7 +276,6 @@ elif modulo == "✏️ Editar / Excluir Compras":
                         st.success("✔️ Compra atualizada com sucesso no Google Sheets!")
                         st.rerun()
             
-            # --- SEÇÃO DE EXCLUSÃO ---
             with col_del:
                 st.markdown("### 🗑️ Excluir Item")
                 st.warning(f"Atenção: Esta ação irá remover permanentemente o item **'{compra_dados['item']}'** da sua planilha.")
@@ -295,17 +308,17 @@ else:
             lotes_disponiveis = df_lotes['nome_lote'].tolist()
             lote_venda = st.selectbox("A qual Lote pertence este produto vendido?", lotes_disponiveis)
             
-            # Dados do lote escolhido para a venda
             lote_info = df_lotes[df_lotes['nome_lote'] == lote_venda].iloc[0]
             id_lote_venda = int(lote_info['id_lote'])
-            custo_unitario_lote = float(lote_info['custo_por_pote'])
+            
+            # Se houver custo com taxa registrado, usa ele como referência principal de custo
+            custo_unitario_lote = float(lote_info['custo_com_taxa']) if 'custo_com_taxa' in lote_info and float(lote_info['custo_com_taxa']) > 0 else float(lote_info['custo_por_pote'])
             
             if custo_unitario_lote <= 0:
-                st.warning(f"⚠️ Atenção: O {lote_venda} ainda não teve o custo por unidade fechado. O cálculo do lucro ficará zerado até você fechar o lote.")
+                st.warning(f"⚠️ Atenção: O {lote_venda} ainda não teve o custo por unidade fechado.")
             else:
-                st.info(f"Custo de fabricação deste lote: R$ {custo_unitario_lote:.2f} por unidade")
+                st.info(f"Custo de fabricação/base deste lote: R$ {custo_unitario_lote:.2f} por unidade")
 
-            # Formulário da Venda
             produto = st.text_input("Produto/Tamanho vendido", placeholder="Ex: Pote Açaí 500ml Completo, Copo 300ml")
             c_q, c_v = st.columns(2)
             with c_q:
@@ -322,7 +335,6 @@ else:
                 if produto == "" or preco_venda <= 0:
                     st.error("Preencha o nome do produto e o preço de venda.")
                 elif aba_vendas is not None:
-                    # CORREÇÃO: Pega o MAIOR id_venda + 1
                     if not df_vendas.empty and 'id_venda' in df_vendas.columns and pd.notna(df_vendas['id_venda'].max()):
                         proximo_id_venda = int(df_vendas['id_venda'].max()) + 1
                     else:
@@ -335,26 +347,22 @@ else:
         with col2:
             st.header("📈 Balanço Financeiro por Lote")
             
-            # Caixa de seleção para analisar o lucro de um lote específico
             lote_analise = st.selectbox("Selecione um lote para ver o balanço de lucros:", lotes_disponiveis)
             lote_analise_info = df_lotes[df_lotes['nome_lote'] == lote_analise].iloc[0]
             id_lote_analise = int(lote_analise_info['id_lote'])
             custo_total_gravado = float(lote_analise_info['custo_total'])
-            custo_unit_gravado = float(lote_analise_info['custo_por_pote'])
             
-            # Filtra as vendas deste lote específico
+            # Utiliza o custo com taxa para apuração precisa do lucro real
+            custo_unit_gravado = float(lote_analise_info['custo_com_taxa']) if 'custo_com_taxa' in lote_analise_info and float(lote_analise_info['custo_com_taxa']) > 0 else float(lote_analise_info['custo_por_pote'])
+            
             vendas_deste_lote = df_vendas[df_vendas['id_lote'] == id_lote_analise] if not df_vendas.empty else pd.DataFrame()
             
-            # Métricas Gerais do Lote Comercializado
             faturamento_lote = float(vendas_deste_lote['faturamento_total'].sum()) if not vendas_deste_lote.empty else 0.0
-            
-            # O custo real vendido é baseado nas unidades que saíram versus o custo de fabricação delas
             qtd_total_vendida = int(vendas_deste_lote['quantidade'].sum()) if not vendas_deste_lote.empty else 0
             custo_das_unidades_vendidas = qtd_total_vendida * custo_unit_gravado
             
             lucro_real = faturamento_lote - custo_das_unidades_vendidas
             
-            # Layout de cartões de resultado (Métricas)
             m1, m2, m3 = st.columns(3)
             with m1:
                 st.metric(label="Investimento no Lote", value=f"R$ {custo_total_gravado:.2f}")
